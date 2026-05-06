@@ -17,22 +17,35 @@ def process_post_interview(candidate_id, job_id, total_score, total_questions):
         print(f"Error fetching/updating application: {e}")
         return
 
-    # full_verification_response = verify_interview_frames(candidate_id, job_id)
-    # verification_results_list = full_verification_response.get("verification_results", [])
-    # verification_summary = full_verification_response.get("summary", {})
+    # Face-verification / cheating detection
+    verification_results_list = []
+    verification_summary = {}
+    try:
+        full_verification_response = verify_interview_frames(candidate_id, job_id)
+        verification_results_list = full_verification_response.get("verification_results", [])
+        verification_summary = full_verification_response.get("summary", {})
+    except Exception as e:
+        print(f"verify_interview_frames failed: {e}")
 
-    confidence_results = confidence_prediction(candidate_id, job_id)
-    confidence_results_score = confidence_results.get("final_score")
+    # Confidence / facial-expression model
+    confidence_results_score = None
+    try:
+        confidence_results = confidence_prediction(candidate_id, job_id) or {}
+        confidence_results_score = confidence_results.get("final_score")
+    except Exception as e:
+        print(f"confidence_prediction failed: {e}")
 
     try:
-        application.confidence_score = confidence_results_score
+        if confidence_results_score is not None:
+            application.confidence_score = confidence_results_score
         if total_questions > 0:
             marks_string = f"{round(total_score, 1)}/{total_questions * 10}"
             application.marks = marks_string
-        # application.face_verification_result = verification_results_list
-
-        # verification_rate = verification_summary.get("verification_rate", 0)
-        # application.flag_status = verification_rate <= 80
+        if verification_results_list:
+            application.face_verification_result = verification_results_list
+            verification_rate = verification_summary.get("verification_rate", 0)
+            # flagged (cheating suspected) when verification rate is low
+            application.flag_status = verification_rate <= 80
         application.save()
         print("Saved all post-interview results.")
 

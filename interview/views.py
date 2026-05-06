@@ -25,12 +25,10 @@ from groq import Groq
 from pathlib import Path
 from backend.settings import BASE_URL
 from dotenv import load_dotenv
-env_path = Path(__file__).resolve().parent.parent / '.env'
-load_dotenv(dotenv_path=env_path)
-# print(huggingface_hub._version_)
+
 # Initialize the inference client
-# client = Groq(api_key=os.getenv('GROQ_API_KEY'))
-client=Groq(api_key="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")
+
+client=Groq(api_key="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")
 
 # job = "Python programmer"
 # Skills="Object oriented programming, functions, and Data structures"
@@ -99,7 +97,7 @@ def get_intent(response):
     try:
         # Generate intent classification
         intent_response =client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             messages=[
                 {
                     "role": "user",
@@ -175,7 +173,7 @@ def score_answer(question, answer):
     try:
         # Generate score
         score_response = client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             messages=[
                 {
                     "role": "user",
@@ -207,7 +205,9 @@ interview_state = {
     "current_question": None,
     "interview_log": [],
     "current_job_id": None,
-    "current_candidate_id": None
+    "current_candidate_id": None,
+    "total_score": 0,
+    "total_questions": 0,
 }
 def save_interview_to_csv(interview_log, candidate_name, job):
     """
@@ -302,108 +302,135 @@ def chatbot_response(request):
 
             })
     except Exception as e:
-        print(f"Error in chatbot_response: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"Error in chatbot_response (reset): {e}")
         return Response({'error': str(e)}, status=500)
-    
-    # Get user input
-    user_input = request.data.get('message', '')
-    print("Candidate Response is ", user_input)
-    # Perform intent classification
-    intent = get_intent(user_input)
-    print(f"Detected Intent: {intent}")
-    from interview.tasks import process_post_interview
 
-    # Check if the intent is to quit the interview or max questions reached
-    if intent == "Quit_interview" or interview_state["question_count"] >= 9:
+    try:
+        # If module-level state was wiped (Django auto-reload, server restart, etc.)
+        # but the client still has the interview open, re-hydrate from the request body.
+        if not interview_state.get("current_candidate_id") or not interview_state.get("current_job_id"):
+            fb_job = request.data.get('job_id')
+            fb_cand = request.data.get('candidate_id')
+            if fb_job and fb_cand:
+                interview_details = get_interview_details(fb_job, fb_cand)
+                interview_state["messages"] = [create_initial_system_message(interview_details)]
+                interview_state["current_job_id"] = fb_job
+                interview_state["current_candidate_id"] = fb_cand
+                interview_state["question_count"] = interview_state.get("question_count", 0)
+                interview_state["total_score"] = interview_state.get("total_score", 0)
+                interview_state["total_questions"] = interview_state.get("total_questions", 0)
+                interview_state["interview_log"] = interview_state.get("interview_log", [])
+                print("Recovered interview_state from request payload")
+            else:
+                return Response(
+                    {'error': 'Interview session expired. Please restart the interview.'},
+                    status=409
+                )
+
+        # Get user input
+        user_input = request.data.get('message', '')
+        print("Candidate Response is ", user_input)
+        # Perform intent classification
+        intent = get_intent(user_input)
+        print(f"Detected Intent: {intent}")
+        from interview.tasks import process_post_interview
+
+        # Check if the intent is to quit the interview or max questions reached
+        if intent == "Quit_interview" or interview_state.get("question_count", 0) >= 9:
             print("Interview ending, triggering background tasks...")
 
             candidate_id = interview_state["current_candidate_id"]
             job_id = interview_state["current_job_id"]
-            total_score = interview_state["total_score"]
-            total_questions = interview_state["total_questions"]
+            total_score = interview_state.get("total_score", 0)
+            total_questions = interview_state.get("total_questions", 0)
 
-            process_post_interview.delay(candidate_id, job_id, total_score, total_questions)
+            # Run synchronously so the report is generated even without a Celery worker.
+            try:
+                process_post_interview(candidate_id, job_id, total_score, total_questions)
+            except Exception as e:
+                print(f"process_post_interview sync failed: {e}")
+                # Fall back to Celery (in case it is wired up)
+                try:
+                    process_post_interview.delay(candidate_id, job_id, total_score, total_questions)
+                except Exception as e2:
+                    print(f"process_post_interview enqueue also failed: {e2}")
 
             response_data = {
                 'response': "Thankyou for your time. The interview is now completed. Good luck with your application",
-                'question_count': interview_state["question_count"],
+                'question_count': interview_state.get("question_count", 0),
                 'intent': intent
             }
             return Response(response_data)
-        
-        
 
-    # Append the user's message to the conversation history
-    interview_state["messages"].append({"role": "user", "content": user_input})
+        # Append the user's message to the conversation history
+        interview_state["messages"].append({"role": "user", "content": user_input})
 
-    # Score the answer if there's a current question
-    if interview_state["current_question"]:
-        score = score_answer(interview_state["current_question"], user_input)
-        # Extract score and comment
-        score, comment = extract_score_and_comment(score)
-        # ai_result= AI_Detetection(user_input)
-        # Update total score only if it's a numeric score
-        try:
-            numeric_score = float(score)
-            interview_state["total_score"] += numeric_score
-            interview_state["total_questions"] += 1
-        except (ValueError, TypeError):
-            # Skip if score is "Not Applicable" or invalid
-            pass
-            
-        print(f"Score for the answer: {score}")
-        # Log the interview details
-        interview_log_entry = {
-            "question": interview_state["current_question"],
-            "answer": user_input,
-            "score": score,
-            # "Detected_AI%":  f"{round(ai_result * 100, 2)}%",
-            "comment": comment,
-            "running_total": f"{interview_state['total_score']}/{interview_state['total_questions']*10}"
-        }
-        application = ApplicationTable.objects.get(
-                        job_id=interview_state["current_job_id"],
-                        candidate_id=interview_state["current_candidate_id"]
-                    )
-        application.interview_logs.append(interview_log_entry)
-        print("Interview Logs has been stored in databases")
-        application.save()
+        # Score the answer if there's a current question
+        if interview_state.get("current_question"):
+            score = score_answer(interview_state["current_question"], user_input)
+            # Extract score and comment
+            score, comment = extract_score_and_comment(score)
+            # Update total score only if it's a numeric score
+            try:
+                numeric_score = float(score)
+                interview_state["total_score"] = interview_state.get("total_score", 0) + numeric_score
+                interview_state["total_questions"] = interview_state.get("total_questions", 0) + 1
+            except (ValueError, TypeError):
+                pass
 
-        interview_state["interview_log"].append(interview_log_entry)
+            print(f"Score for the answer: {score}")
+            interview_log_entry = {
+                "question": interview_state["current_question"],
+                "answer": user_input,
+                "score": score,
+                "comment": comment,
+                "running_total": f"{interview_state.get('total_score', 0)}/{interview_state.get('total_questions', 0)*10}"
+            }
+            try:
+                application = ApplicationTable.objects.get(
+                    job_id=interview_state["current_job_id"],
+                    candidate_id=interview_state["current_candidate_id"]
+                )
+                if application.interview_logs is None:
+                    application.interview_logs = []
+                application.interview_logs.append(interview_log_entry)
+                application.save()
+                print("Interview Logs has been stored in databases")
+            except ApplicationTable.DoesNotExist:
+                print("ApplicationTable row missing — skipping log persist")
 
-    # Generate the assistant's response
-    completion = client.chat.completions.create(
-    model="llama3-8b-8192",
-    messages=interview_state["messages"],
-    temperature=1,
-    # max_completion_tokens=1024,
-    top_p=1,
-    # stream=True,
-    stop=None,
-    )
+            interview_state["interview_log"].append(interview_log_entry)
 
-    # Extract the assistant's message
-    assistant_message = completion.choices[0].message.content
+        # Generate the assistant's response
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=interview_state["messages"],
+            temperature=1,
+            top_p=1,
+            stop=None,
+        )
 
-    # Update current question if it contains a question mark
-    interview_state["current_question"] = assistant_message if "?" in assistant_message else None
+        assistant_message = completion.choices[0].message.content
 
-    # Append the assistant's response to the conversation history
-    interview_state["messages"].append({"role": "assistant", "content": assistant_message})
+        interview_state["current_question"] = assistant_message if "?" in assistant_message else None
+        interview_state["messages"].append({"role": "assistant", "content": assistant_message})
 
-    # Increment question count if a technical question is asked
-    if "?" in assistant_message:
-        interview_state["question_count"] += 1
+        if "?" in assistant_message:
+            interview_state["question_count"] = interview_state.get("question_count", 0) + 1
 
-    print('response', assistant_message,)
-    # Prepare response
-    response_data = {
-        'response': assistant_message,
-        'question_count': interview_state["question_count"],
-        'intent': intent
-    }
-    
-    return Response(response_data)
+        print('response', assistant_message)
+        return Response({
+            'response': assistant_message,
+            'question_count': interview_state.get("question_count", 0),
+            'intent': intent
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Error in chatbot_response: {e}")
+        return Response({'error': str(e)}, status=500)
 
 
 @api_view(['GET'])
@@ -675,8 +702,9 @@ def transcribe_audio(request):
         with open(temp_file_path, "rb") as file:
             transcription = client.audio.transcriptions.create(
                 file=(temp_file_path, file.read()),
-                model="distil-whisper-large-v3-en",
+                model="whisper-large-v3",
                 response_format="verbose_json",
+                language="en",
             )
         
         # Extract transcribed text
