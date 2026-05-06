@@ -357,10 +357,29 @@ def chatbot_response(request):
                 except Exception as e2:
                     print(f"process_post_interview enqueue also failed: {e2}")
 
+            # Build a report for the candidate to see immediately
+            report = {
+                'marks': None,
+                'confidence_score': None,
+                'flag_status': None,
+                'total_questions': total_questions,
+                'total_score': round(total_score, 1) if total_score else 0,
+            }
+            try:
+                app_row = ApplicationTable.objects.get(job_id=job_id, candidate_id=candidate_id)
+                report['marks'] = app_row.marks
+                report['confidence_score'] = app_row.confidence_score
+                report['flag_status'] = app_row.flag_status
+                report['interview_logs'] = app_row.interview_logs or []
+            except ApplicationTable.DoesNotExist:
+                pass
+
             response_data = {
-                'response': "Thankyou for your time. The interview is now completed. Good luck with your application",
+                'response': "Thank you for your time. The interview is now completed. Good luck with your application",
                 'question_count': interview_state.get("question_count", 0),
-                'intent': intent
+                'intent': intent,
+                'interview_ended': True,
+                'report': report,
             }
             return Response(response_data)
 
