@@ -1,6 +1,6 @@
 ﻿aiofiles==23.2.1
 aiohappyeyeballs==2.4.4
-aiohttp==3.13.5
+aiohttp==3.10.11
 aiosignal==1.4.0
 amqp==5.3.1
 annotated-doc==0.0.4
