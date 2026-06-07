@@ -31,7 +31,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-secret-key')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 PORT = os.environ.get('PORT', '8000')
 BASE_URL=os.environ.get('BASE_URL', 'http://127.0.0.1:8000/')
 ALLOWED_HOSTS = [
@@ -41,8 +41,10 @@ ALLOWED_HOSTS = [
     'healthcheck.railway.app',
     'https://interview-backend-production-bdf0.up.railway.app',
     "https://talent-scout-flax.vercel.app",
-
+    '.onrender.com',
 ]
+# Extra hosts via env (comma-separated), e.g. your render + vercel domains
+ALLOWED_HOSTS += [h.strip() for h in os.getenv("EXTRA_ALLOWED_HOSTS", "").split(",") if h.strip()]
 # Make sure Django binds to the port provided by Railway
 
 # Application definition
@@ -108,6 +110,8 @@ CORS_ALLOWED_ORIGINS = [
     "https://talent-scout-flax.vercel.app",
     "http://localhost:5173"
 ]
+# Extra CORS origins via env (comma-separated full URLs)
+CORS_ALLOWED_ORIGINS += [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
 
 
 ROOT_URLCONF = 'backend.urls'
